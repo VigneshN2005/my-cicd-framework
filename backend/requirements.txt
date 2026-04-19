@@ -1,0 +1,18 @@
+# Web Framework
+fastapi>=0.110.0
+
+# Server to run FastAPI
+uvicorn>=0.27.0
+
+# For making HTTP requests
+httpx>=0.26.0
+
+# For testing
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+
+# For data validation (FastAPI uses this internally)
+pydantic>=2.6.0
+
+# AI/ML libraries (ready for your college AI projects)
+numpy>=1.24.0

@@ -1,0 +1,100 @@
+# ─────────────────────────────────────────────────
+# pipeline-config.yml
+# THIS IS YOUR CI/CD CONTROL PANEL
+#
+# Change these values to control what the
+# pipeline does for each of your projects
+#
+# How it works:
+#   true  = pipeline RUNS this stage
+#   false = pipeline SKIPS this stage
+# ─────────────────────────────────────────────────
+
+
+# ── Project Info ──────────────────────────────────
+project:
+  name: "my-cicd-framework"       # your project name
+  version: "1.0.0"                # project version
+  description: "CI/CD Learning Framework"
+
+  # What type of project is this?
+  # Options:
+  #   fullstack → has both frontend and backend
+  #   frontend  → only React app
+  #   backend   → only Python/FastAPI
+  type: "fullstack"
+
+
+# ── Feature Flags ─────────────────────────────────
+# Turn each pipeline stage ON or OFF
+features:
+
+  # Build React frontend?
+  # Set false if your project has no frontend
+  frontend: true
+
+  # Build Python/FastAPI backend?
+  # Set false if your project has no backend
+  backend: true
+
+  # Run automated tests?
+  # pytest for backend, vitest for frontend
+  test: true
+
+  # Build Docker image?
+  # Set false if you just want to test, not package
+  docker: true
+
+  # Deploy the Docker container?
+  # Set false if you only want to build, not deploy
+  deploy: true
+
+
+# ── Environment Settings ──────────────────────────
+environment:
+
+  # Node.js version for frontend build
+  node_version: "18"
+
+  # Python version for backend build
+  python_version: "3.11"
+
+  # Ports
+  frontend_port: 3001       # React runs here locally
+  backend_port: 8000        # FastAPI runs here
+
+
+# ── Docker Settings ───────────────────────────────
+docker:
+
+  # Name of your Docker image
+  image_name: "my-cicd-app"
+
+  # Docker image version tag
+  image_tag: "latest"
+
+  # Port mappings (host:container)
+  ports:
+    frontend: "80:80"
+    backend: "8000:8000"
+
+
+# ── Test Settings ─────────────────────────────────
+testing:
+
+  # Run backend tests (pytest)?
+  backend_tests: true
+
+  # Run frontend tests (vitest)?
+  frontend_tests: true
+
+  # If tests fail, stop the pipeline?
+  # Always keep this true!
+  fail_on_error: true
+
+
+# ── Notification Settings (future use) ────────────
+# notifications:
+#   on_success: true
+#   on_failure: true
+#   email: "your@email.com"

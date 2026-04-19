@@ -1,0 +1,255 @@
+# ─────────────────────────────────────────────────
+# core.yml
+# THIS IS THE BRAIN OF YOUR CI/CD PIPELINE
+#
+# This file tells GitHub Actions what to do
+# every time you push code to the main branch
+#
+# Flow:
+#   Push code → GitHub reads this file
+#   → Runs each job → Builds, Tests, Deploys
+# ─────────────────────────────────────────────────
+
+name: CI/CD Pipeline  # Name shown on GitHub Actions tab
+
+# ── TRIGGER ───────────────────────────────────────
+# When should this pipeline run?
+on:
+  push:
+    branches:
+      - main          # Runs when you push to main branch
+
+  # Also allows you to run manually from GitHub UI
+  workflow_dispatch:
+
+# ── JOBS ──────────────────────────────────────────
+# Jobs are the main sections of your pipeline
+# Each job runs on a fresh Linux machine
+jobs:
+
+  # ════════════════════════════════════════════════
+  # JOB 1: BUILD AND TEST
+  # Builds frontend + backend, runs tests
+  # ════════════════════════════════════════════════
+  build-and-test:
+    name: Build and Test        # Name shown on GitHub
+    runs-on: ubuntu-latest      # Fresh Linux machine
+
+    steps:
+
+      # ── STEP 1: CHECKOUT ────────────────────────
+      # Downloads your code onto the Linux machine
+      # Without this, the machine has no code!
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # ── STEP 2: READ CONFIG ─────────────────────
+      # Reads your pipeline-config.yml
+      # Sets variables that other steps can use
+      - name: Read Pipeline Config
+        id: config
+        run: |
+          echo "Reading pipeline-config.yml..."
+
+          # Read each feature flag from config
+          FRONTEND=$(python3 -c "
+          import re
+          content = open('pipeline-config.yml').read()
+          match = re.search(r'frontend:\s*(true|false)', content)
+          print(match.group(1) if match else 'true')
+          ")
+
+          BACKEND=$(python3 -c "
+          import re
+          content = open('pipeline-config.yml').read()
+          match = re.search(r'backend:\s*(true|false)', content)
+          print(match.group(1) if match else 'true')
+          ")
+
+          TEST=$(python3 -c "
+          import re
+          content = open('pipeline-config.yml').read()
+          match = re.search(r'test:\s*(true|false)', content)
+          print(match.group(1) if match else 'true')
+          ")
+
+          # Save to GitHub environment variables
+          echo "frontend=$FRONTEND" >> $GITHUB_OUTPUT
+          echo "backend=$BACKEND" >> $GITHUB_OUTPUT
+          echo "test=$TEST" >> $GITHUB_OUTPUT
+
+          echo "✅ Config loaded!"
+          echo "   Frontend: $FRONTEND"
+          echo "   Backend:  $BACKEND"
+          echo "   Test:     $TEST"
+
+      # ── STEP 3: SETUP NODE.JS ───────────────────
+      # Installs Node.js on the Linux machine
+      # Needed to build React frontend
+      - name: Setup Node.js
+        if: steps.config.outputs.frontend == 'true'
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'      # same version as your local
+          cache: 'npm'
+          cache-dependency-path: frontend/package.json
+
+      # ── STEP 4: BUILD FRONTEND ──────────────────
+      # Installs React dependencies and builds app
+      # Same as running npm install + npm run build locally
+      - name: Build Frontend
+        if: steps.config.outputs.frontend == 'true'
+        run: |
+          echo "🌐 Building React Frontend..."
+          cd frontend
+          npm install
+          npm run build
+          echo "✅ Frontend build complete!"
+          echo "   Built files in frontend/dist/"
+
+      # ── STEP 5: SETUP PYTHON ────────────────────
+      # Installs Python on the Linux machine
+      # Needed to run FastAPI backend
+      - name: Setup Python
+        if: steps.config.outputs.backend == 'true'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'  # same version as your local
+
+      # ── STEP 6: BUILD BACKEND ───────────────────
+      # Installs all Python libraries
+      # Same as running pip install -r requirements.txt locally
+      - name: Build Backend
+        if: steps.config.outputs.backend == 'true'
+        run: |
+          echo "⚙️ Building Python Backend..."
+          cd backend
+          pip install -r requirements.txt
+          echo "✅ Backend build complete!"
+
+      # ── STEP 7: RUN BACKEND TESTS ───────────────
+      # Runs pytest on your backend
+      # If any test fails → pipeline STOPS here
+      # App will NOT be deployed if tests fail!
+      - name: Run Backend Tests
+        if: |
+          steps.config.outputs.backend == 'true' &&
+          steps.config.outputs.test == 'true'
+        run: |
+          echo "🧪 Running Backend Tests..."
+          cd backend
+          pytest tests/ -v
+          echo "✅ All backend tests passed!"
+
+      # ── STEP 8: RUN FRONTEND TESTS ──────────────
+      # Runs vitest on your frontend
+      - name: Run Frontend Tests
+        if: |
+          steps.config.outputs.frontend == 'true' &&
+          steps.config.outputs.test == 'true'
+        run: |
+          echo "🧪 Running Frontend Tests..."
+          cd frontend
+          npm run test
+          echo "✅ All frontend tests passed!"
+
+      # ── STEP 9: QUALITY GATE ────────────────────
+      # This step only runs if ALL above steps passed
+      # It's a checkpoint before Docker build
+      - name: Quality Gate Check
+        run: |
+          echo "🔍 Quality Gate Check..."
+          echo "✅ All builds successful!"
+          echo "✅ All tests passed!"
+          echo "✅ Code is ready for packaging!"
+
+
+  # ════════════════════════════════════════════════
+  # JOB 2: DOCKER BUILD
+  # Packages your app into a Docker container
+  # Only runs if Job 1 (build-and-test) passed!
+  # ════════════════════════════════════════════════
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    # ⚠️ IMPORTANT: Only runs if build-and-test passed!
+    # This is the quality gate in action
+    needs: build-and-test
+
+    steps:
+
+      # Checkout code again (fresh machine)
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # ── STEP 1: BUILD DOCKER IMAGE ──────────────
+      # Creates Docker image of your entire app
+      # Same as running docker build locally
+      - name: Build Docker Image
+        run: |
+          echo "🐳 Building Docker Image..."
+          docker build -t my-cicd-app:latest .
+          echo "✅ Docker image built successfully!"
+
+      # ── STEP 2: VERIFY IMAGE ────────────────────
+      # Checks that the image was created correctly
+      - name: Verify Docker Image
+        run: |
+          echo "🔍 Verifying Docker Image..."
+          docker images my-cicd-app
+          echo "✅ Docker image verified!"
+
+      # ── STEP 3: TEST DOCKER CONTAINER ───────────
+      # Starts the container and checks it runs
+      - name: Test Docker Container
+        run: |
+          echo "🧪 Testing Docker Container..."
+
+          # Start container in background
+          docker run -d \
+            -p 80:80 \
+            -p 8000:8000 \
+            --name test-container \
+            my-cicd-app:latest
+
+          # Wait for container to start
+          sleep 5
+
+          # Check if container is running
+          docker ps | grep test-container
+
+          # Test backend health check
+          curl -f http://localhost:8000 || exit 1
+
+          echo "✅ Container is running correctly!"
+
+          # Stop test container
+          docker stop test-container
+          docker rm test-container
+
+
+  # ════════════════════════════════════════════════
+  # JOB 3: SUMMARY
+  # Shows a summary of what happened
+  # ════════════════════════════════════════════════
+  pipeline-summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: docker-build   # runs after docker job
+
+    steps:
+      - name: Pipeline Complete
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  CI/CD PIPELINE COMPLETE 🚀    "
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Code checked out"
+          echo "✅ Frontend built (React)"
+          echo "✅ Backend built (FastAPI)"
+          echo "✅ Tests passed (pytest)"
+          echo "✅ Docker image built"
+          echo "✅ Container tested"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Your app is ready to deploy!  "
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

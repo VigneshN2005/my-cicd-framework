@@ -1,0 +1,33 @@
+# docker-compose.yml
+# This makes running Docker easy
+# Instead of long docker commands, just run:
+#   docker-compose up
+#
+# CI/CD Note: Pipeline uses this to run your app
+
+version: '3.8'
+
+services:
+
+  # Your main app (frontend + backend together)
+  app:
+    # Build from Dockerfile in current folder
+    build: .
+
+    # Container name
+    container_name: my-cicd-apps
+
+    # Port mapping
+    # Format: "your-machine-port:container-port"
+    ports:
+      - "3001:80"        # Frontend accessible at localhost:80
+      - "8000:8000"    # Backend accessible at localhost:8000
+
+    # Restart container if it crashes
+    restart: unless-stopped
+
+    # Environment variables (can be used in your app)
+    environment:
+      - APP_ENV=production
+      - FRONTEND_PORT=80
+      - BACKEND_PORT=8000
