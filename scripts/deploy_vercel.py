@@ -94,6 +94,12 @@ class VercelDeployer:
     poll_seconds: float = 10.0
     log: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Accept "my-app.vercel.app" as well as "https://my-app.vercel.app"
+        self.app_url = self.app_url.strip().rstrip("/")
+        if not self.app_url.startswith(("http://", "https://")):
+            self.app_url = "https://" + self.app_url
+
     def say(self, message: str) -> None:
         self.log.append(message)
         if not message.startswith("::") and not message.startswith("Health check not passing"):

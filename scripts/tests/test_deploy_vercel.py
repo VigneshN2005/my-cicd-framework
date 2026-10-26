@@ -123,3 +123,12 @@ def test_no_rollback_on_first_deploy_without_previous():
 
     deployer.promote = promote_then_break
     assert run(deployer, "v2", rollback=True) == "failed"
+
+
+def test_app_url_without_scheme_is_accepted():
+    fake = FakeVercel({OLD: "v1", NEW: "v2"})
+    deployer = make(fake)
+    deployer.app_url = PROD.removeprefix("https://")
+    deployer.__post_init__()
+    assert deployer.app_url == PROD
+    assert run(deployer, "v2", rollback=True) == "deployed"
