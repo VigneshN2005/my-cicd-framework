@@ -74,6 +74,9 @@ def build_request(provider: str, prompt: str, model: str, api_key: str) -> urlli
     else:
         raise ValueError(f"unknown AI provider: {provider}")
     req.add_header("Content-Type", "application/json")
+    # Groq's API sits behind Cloudflare, which rejects Python's default
+    # "Python-urllib" user agent with HTTP 403; identify the client instead.
+    req.add_header("User-Agent", "my-cicd-framework-ai-review/2.0")
     return req
 
 
@@ -132,6 +135,10 @@ def main(argv: list[str]) -> int:
     prompt, trimmed = build_prompt(diff, os.environ.get("PR_TITLE", ""), max_chars)
     try:
         review = call_model(provider, prompt, model, api_key)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        print(f"::warning title=AI review unavailable::HTTP {exc.code} from {provider}: {detail}")
+        return 0
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         # Advisory stage: report the problem but never fail the pipeline over it.
         print(f"::warning title=AI review unavailable::{exc}")

@@ -31,6 +31,12 @@ def test_groq_request_uses_openai_format():
     assert body["messages"][0] == {"role": "user", "content": "review this"}
 
 
+def test_requests_send_a_user_agent():
+    for provider in ("groq", "gemini"):
+        req = ai_review.build_request(provider, "x", "m", "k")
+        assert req.get_header("User-agent", "").startswith("my-cicd-framework")
+
+
 def test_gemini_request_uses_api_key_header():
     req = ai_review.build_request("gemini", "review this", "gemini-2.5-flash", "k123")
     assert "gemini-2.5-flash:generateContent" in req.full_url
