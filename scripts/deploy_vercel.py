@@ -52,7 +52,9 @@ def default_runner(args: list[str]) -> str:
     """Run a CLI command and return its stdout; raise DeployError on failure."""
     result = subprocess.run(args, capture_output=True, text=True, timeout=900)  # noqa: S603
     if result.returncode != 0:
-        raise DeployError(f"`{' '.join(args[:3])} ...` failed: {result.stderr.strip()[-500:]}")
+        # The CLI prints some errors to stdout and some to stderr; keep the end of both.
+        detail = (result.stderr.strip()[-700:] + " | " + result.stdout.strip()[-500:]).strip(" |")
+        raise DeployError(f"`{' '.join(args[:3])} ...` failed (exit {result.returncode}): {detail}")
     return result.stdout
 
 
@@ -112,7 +114,9 @@ class VercelDeployer:
         return lines[-1]
 
     def promote(self, deployment_url: str) -> None:
-        self.cli("promote", deployment_url)
+        # --scope makes the CLI look the deployment up in the right team;
+        # --yes avoids an interactive prompt in CI.
+        self.cli("promote", deployment_url, "--yes", "--scope", self.org_id)
         self.say(f"Production domain now points to {deployment_url}")
 
     def health_check(self, base_url: str, expected_version: str | None, use_bypass: bool) -> None:
