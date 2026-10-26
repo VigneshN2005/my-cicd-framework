@@ -72,6 +72,6 @@ ai_review:
   # groq (default, fast, free tier) | gemini
   # The matching secret must exist: GROQ_API_KEY or GEMINI_API_KEY.
   provider: "groq"
-  model: "llama-3.3-70b-versatile"
+  model: "openai/gpt-oss-120b"
   # Large diffs are trimmed to this many characters before review.
   max_diff_chars: 60000

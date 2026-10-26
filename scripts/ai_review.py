@@ -176,7 +176,7 @@ def main(argv: list[str]) -> int:
         print("Empty diff, nothing to review.")
         return 0
 
-    model = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("AI_MODEL", "openai/gpt-oss-120b")
     max_chars = int(os.environ.get("MAX_DIFF_CHARS", "60000"))
     prompt, trimmed = build_prompt(diff, os.environ.get("PR_TITLE", ""), max_chars)
     try:
