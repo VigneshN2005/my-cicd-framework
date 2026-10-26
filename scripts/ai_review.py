@@ -1,16 +1,18 @@
-"""Ask an LLM (Google Gemini) to review a pull request diff.
+"""Ask an LLM to review a pull request diff (Groq or Google Gemini).
 
 The workflow saves the PR diff to a file, runs this script, and posts the
 output as a PR comment. The review is advisory: it never blocks a merge,
-and a human still decides. If no API key is configured the script exits
-cleanly so the pipeline keeps working without it.
+and a human still decides. If the provider's API key is not configured the
+script exits cleanly so the pipeline keeps working without it.
 
 Usage:
     python scripts/ai_review.py <diff-file> <output-file>
 
 Environment:
-    GEMINI_API_KEY   - API key (GitHub secret); review is skipped if absent
-    AI_MODEL         - model name from pipeline-config.yml
+    AI_PROVIDER      - "groq" or "gemini" (from pipeline-config.yml)
+    AI_MODEL         - model name (from pipeline-config.yml)
+    GROQ_API_KEY     - used when AI_PROVIDER=groq   (GitHub secret)
+    GEMINI_API_KEY   - used when AI_PROVIDER=gemini (GitHub secret)
     MAX_DIFF_CHARS   - diffs longer than this are trimmed
     PR_TITLE         - pull request title, for context
 """
@@ -23,7 +25,9 @@ import sys
 import urllib.error
 import urllib.request
 
-ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+KEY_NAMES = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 MARKER = "<!-- ai-code-review -->"
 
 INSTRUCTIONS = """You are a careful senior engineer reviewing a pull request.
@@ -50,33 +54,55 @@ def build_prompt(diff: str, title: str, max_chars: int) -> tuple[str, bool]:
     return prompt, trimmed
 
 
-def extract_text(response: dict) -> str:
+def build_request(provider: str, prompt: str, model: str, api_key: str) -> urllib.request.Request:
+    """Build the HTTP request for the chosen provider."""
+    if provider == "groq":
+        # Groq exposes an OpenAI-compatible chat completions API.
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        }
+        req = urllib.request.Request(GROQ_ENDPOINT, data=json.dumps(body).encode(), method="POST")
+        req.add_header("Authorization", f"Bearer {api_key}")
+    elif provider == "gemini":
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
+        req = urllib.request.Request(
+            GEMINI_ENDPOINT.format(model=model), data=json.dumps(body).encode(), method="POST"
+        )
+        req.add_header("x-goog-api-key", api_key)
+    else:
+        raise ValueError(f"unknown AI provider: {provider}")
+    req.add_header("Content-Type", "application/json")
+    return req
+
+
+def extract_text(provider: str, response: dict) -> str:
+    """Pull the review text out of the provider's response."""
     try:
-        parts = response["candidates"][0]["content"]["parts"]
+        if provider == "groq":
+            text = response["choices"][0]["message"]["content"]
+        else:
+            parts = response["candidates"][0]["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts)
     except (KeyError, IndexError, TypeError):
         raise ValueError(f"unexpected response from the model: {str(response)[:300]}") from None
-    text = "".join(p.get("text", "") for p in parts).strip()
+    text = (text or "").strip()
     if not text:
         raise ValueError("the model returned an empty review")
     return text
 
 
-def call_model(prompt: str, model: str, api_key: str) -> str:
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2},
-    }).encode()
-    req = urllib.request.Request(ENDPOINT.format(model=model), data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("x-goog-api-key", api_key)
+def call_model(provider: str, prompt: str, model: str, api_key: str) -> str:
+    req = build_request(provider, prompt, model, api_key)
     with urllib.request.urlopen(req, timeout=120) as resp:
-        return extract_text(json.loads(resp.read().decode()))
+        return extract_text(provider, json.loads(resp.read().decode()))
 
 
-def format_comment(review: str, model: str, trimmed: bool) -> str:
+def format_comment(review: str, provider: str, model: str, trimmed: bool) -> str:
     note = "\n\n_Note: the diff was long, so only the first part was reviewed._" if trimmed else ""
     return (
-        f"{MARKER}\n### AI code review ({model})\n\n{review}{note}\n\n"
+        f"{MARKER}\n### AI code review ({provider}: {model})\n\n{review}{note}\n\n"
         "_Automated and advisory only. A human reviewer makes the final call._"
     )
 
@@ -85,9 +111,15 @@ def main(argv: list[str]) -> int:
     if len(argv) != 3:
         print("usage: ai_review.py <diff-file> <output-file>")
         return 2
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+
+    provider = os.environ.get("AI_PROVIDER", "groq").strip().lower()
+    if provider not in KEY_NAMES:
+        print(f"::error::AI_PROVIDER must be one of {', '.join(KEY_NAMES)}; got {provider!r}")
+        return 1
+    key_name = KEY_NAMES[provider]
+    api_key = os.environ.get(key_name, "").strip()
     if not api_key:
-        print("::notice::GEMINI_API_KEY is not set, so the AI review was skipped.")
+        print(f"::notice::{key_name} is not set, so the AI review was skipped.")
         return 0
 
     diff = open(argv[1], encoding="utf-8", errors="replace").read()
@@ -95,18 +127,19 @@ def main(argv: list[str]) -> int:
         print("Empty diff, nothing to review.")
         return 0
 
-    model = os.environ.get("AI_MODEL", "gemini-2.5-flash")
-    prompt, trimmed = build_prompt(diff, os.environ.get("PR_TITLE", ""), int(os.environ.get("MAX_DIFF_CHARS", "60000")))
+    model = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+    max_chars = int(os.environ.get("MAX_DIFF_CHARS", "60000"))
+    prompt, trimmed = build_prompt(diff, os.environ.get("PR_TITLE", ""), max_chars)
     try:
-        review = call_model(prompt, model, api_key)
+        review = call_model(provider, prompt, model, api_key)
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         # Advisory stage: report the problem but never fail the pipeline over it.
         print(f"::warning title=AI review unavailable::{exc}")
         return 0
 
     with open(argv[2], "w", encoding="utf-8") as fh:
-        fh.write(format_comment(review, model, trimmed))
-    print("Review written.")
+        fh.write(format_comment(review, provider, model, trimmed))
+    print(f"Review written ({provider}: {model}).")
     return 0
 
 

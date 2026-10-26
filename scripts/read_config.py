@@ -23,7 +23,8 @@ import yaml
 STAGES = ("lint", "test", "security", "docker", "publish", "deploy", "ai_review")
 PROJECT_TYPES = ("fullstack", "frontend", "backend")
 SEVERITIES = ("low", "moderate", "high", "critical")
-PROVIDERS = ("render",)
+PROVIDERS = ("vercel", "render")
+AI_PROVIDERS = ("groq", "gemini")
 
 
 class ConfigError(ValueError):
@@ -142,6 +143,7 @@ def load_config(path: str | Path) -> dict[str, str]:
     out["health_timeout_seconds"] = str(_positive_int(deploy, "health_timeout_seconds", "deploy"))
     out["rollback_on_failure"] = str(_bool(deploy, "rollback_on_failure", "deploy")).lower()
 
+    out["ai_provider"] = _choice(ai, "provider", "ai_review", AI_PROVIDERS)
     out["ai_model"] = _text(ai, "model", "ai_review")
     out["ai_max_diff_chars"] = str(_positive_int(ai, "max_diff_chars", "ai_review"))
     return out

@@ -55,17 +55,23 @@ docker:
 
 # ── Deployment ────────────────────────────────────
 deploy:
-  # Only "render" is supported right now.
-  provider: "render"
-  # Path the post-deploy health check calls. It must return the deployed
-  # commit SHA, so the check proves the NEW version is the one serving.
+  # vercel: blue-green release. The new version is built and health-checked
+  #         BEFORE the production domain is switched to it.
+  # render: runs the published Docker image from GHCR.
+  provider: "vercel"
+  # Path the health check calls. It must return the deployed commit SHA,
+  # so the check proves the NEW version is the one serving.
   health_path: "/api/health"
   health_timeout_seconds: 300
-  # Redeploy the :stable image if the new version fails its health check.
+  # If production fails its check after the switch, put the previous
+  # version back automatically.
   rollback_on_failure: true
 
 # ── AI code review ────────────────────────────────
 ai_review:
-  model: "gemini-2.5-flash"
+  # groq (default, fast, free tier) | gemini
+  # The matching secret must exist: GROQ_API_KEY or GEMINI_API_KEY.
+  provider: "groq"
+  model: "llama-3.3-70b-versatile"
   # Large diffs are trimmed to this many characters before review.
   max_diff_chars: 60000

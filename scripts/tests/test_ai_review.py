@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -21,25 +22,53 @@ def test_long_diff_is_trimmed():
     assert "x" * 101 not in prompt
 
 
-def test_extract_text_joins_parts():
+def test_groq_request_uses_openai_format():
+    req = ai_review.build_request("groq", "review this", "llama-3.3-70b-versatile", "k123")
+    body = json.loads(req.data)
+    assert req.full_url == ai_review.GROQ_ENDPOINT
+    assert req.get_header("Authorization") == "Bearer k123"
+    assert body["model"] == "llama-3.3-70b-versatile"
+    assert body["messages"][0] == {"role": "user", "content": "review this"}
+
+
+def test_gemini_request_uses_api_key_header():
+    req = ai_review.build_request("gemini", "review this", "gemini-2.5-flash", "k123")
+    assert "gemini-2.5-flash:generateContent" in req.full_url
+    assert req.get_header("X-goog-api-key") == "k123"
+
+
+def test_unknown_provider_is_rejected():
+    with pytest.raises(ValueError):
+        ai_review.build_request("openai", "x", "m", "k")
+
+
+def test_extract_text_groq():
+    response = {"choices": [{"message": {"content": "  No issues found.  "}}]}
+    assert ai_review.extract_text("groq", response) == "No issues found."
+
+
+def test_extract_text_gemini_joins_parts():
     response = {"candidates": [{"content": {"parts": [{"text": "No "}, {"text": "issues."}]}}]}
-    assert ai_review.extract_text(response) == "No issues."
+    assert ai_review.extract_text("gemini", response) == "No issues."
 
 
 def test_extract_text_rejects_bad_response():
     with pytest.raises(ValueError):
-        ai_review.extract_text({"error": "quota"})
+        ai_review.extract_text("groq", {"error": {"message": "rate limited"}})
 
 
 def test_comment_is_marked_and_advisory():
-    comment = ai_review.format_comment("Looks fine.", "gemini-2.5-flash", trimmed=True)
+    comment = ai_review.format_comment("Looks fine.", "groq", "llama-3.3-70b-versatile", trimmed=True)
     assert comment.startswith(ai_review.MARKER)
+    assert "groq: llama-3.3-70b-versatile" in comment
     assert "advisory" in comment
     assert "first part" in comment
 
 
-def test_skips_cleanly_without_api_key(tmp_path, monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+@pytest.mark.parametrize("provider,key", [("groq", "GROQ_API_KEY"), ("gemini", "GEMINI_API_KEY")])
+def test_skips_cleanly_without_api_key(tmp_path, monkeypatch, provider, key):
+    monkeypatch.setenv("AI_PROVIDER", provider)
+    monkeypatch.delenv(key, raising=False)
     diff = tmp_path / "pr.diff"
     diff.write_text("+x = 1")
     out = tmp_path / "review.md"

@@ -9,7 +9,7 @@ src = ["backend", "scripts"]
 select = ["E", "W", "F", "B", "S", "I"]
 
 [lint.per-file-ignores]
-# assert is how pytest works; it is not a security problem in tests
-"**/tests/**" = ["S101"]
+# assert is how pytest works, and tests use fake tokens; neither is a security problem
+"**/tests/**" = ["S101", "S105", "S106"]
 # The deploy and review scripts call fixed HTTPS APIs on purpose
 "scripts/*.py" = ["S310"]

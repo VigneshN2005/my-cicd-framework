@@ -26,3 +26,7 @@ coverage/
 frontend/coverage/
 .pytest_cache/
 .ruff_cache/
+
+# Written by the pipeline before each Vercel deploy
+api/_version.py
+.vercel/

@@ -20,11 +20,11 @@ push / pull request
      └──┬──┘
       docker ──────── build · smoke test · Trivy image scan · push to GHCR
         │
-      deploy ──────── Render · health check on the new version · rollback to :stable
-        │
+      deploy ──────── Vercel blue-green: build hidden → health check → switch domain
+        │             (or Render: run the GHCR image, roll back to :stable)
      summary
 
-pull request ── ai-review ── Gemini reviews the diff and comments on the PR
+pull request ── ai-review ── Groq (or Gemini) reviews the diff and comments on the PR
 ```
 
 | Stage | Tools | Blocks the release when |
@@ -35,8 +35,8 @@ pull request ── ai-review ── Gemini reviews the diff and comments on the
 | Security | Gitleaks, pip-audit, npm audit | a secret is found or a vulnerable dependency at or above `fail_on` |
 | Docker | multi-stage build, container smoke test, Trivy | the container does not start correctly or the image has fixable vulnerabilities at or above `fail_on` |
 | Publish | GitHub Container Registry | (main branch only) |
-| Deploy | Render API, `scripts/deploy_render.py` | the new version does not go live or fails its health check |
-| AI review | Gemini (`scripts/ai_review.py`) | never: advisory comment only |
+| Deploy | Vercel CLI + API (`scripts/deploy_vercel.py`) or Render (`scripts/deploy_render.py`) | the new version fails its health check |
+| AI review | Groq or Gemini (`scripts/ai_review.py`) | never: advisory comment only |
 
 ## The control panel: `pipeline-config.yml`
 
@@ -62,37 +62,57 @@ The config is validated on every run. Wrong types (`lint: yes`), unknown stages,
 combinations (`deploy` without `publish`) and out-of-range values fail the pipeline in the first
 job with a clear error message.
 
-## How deployment and rollback work
+## How deployment and rollback work (Vercel)
 
-1. Every image is tagged with its commit SHA, and the SHA is baked into the image as `APP_VERSION`.
-2. The deploy job asks Render to run the new image and waits until Render reports it live.
-3. It then calls `/api/health` until the app reports **the new commit SHA**. This proves the new
-   version is the one actually serving traffic, not an old instance.
-4. On success, the image is promoted to the `:stable` tag.
-5. On failure, the pipeline redeploys `:stable` (the last version that passed its health check)
-   and marks the run as failed.
+On Vercel, the React app is served as static files and the FastAPI backend runs as a
+serverless Python function (`api/index.py`). The release is blue-green:
+
+1. The pipeline records which deployment currently serves the production domain.
+2. It builds the new version as a production deployment **without** switching the domain
+   (`vercel deploy --prod --skip-domain`). Users still see the old version.
+3. It calls `/api/health` on the new deployment until it reports **the new commit SHA**.
+   If it never does, the release stops here: the domain was never switched, so users are
+   unaffected.
+4. Only then does it point the production domain at the new deployment (`vercel promote`).
+5. It checks the production domain itself. If that fails, it promotes the previous
+   deployment back and fails the run.
+
+The Docker image is still built, scanned and published to GHCR for container platforms.
+Setting `deploy.provider: "render"` deploys that image to Render instead, with rollback to the
+`:stable` image tag.
 
 ## Setup
 
-### Required for deployment (one time)
+### Deployment to Vercel (one time)
 
-1. Let the pipeline run once on `main` so the image is published to
-   `ghcr.io/vigneshn2005/my-cicd-app`. In the package settings on GitHub, set its visibility
-   to **Public** (or give Render registry credentials).
-2. On [Render](https://render.com), create a **Web Service** from an existing image:
-   `ghcr.io/vigneshn2005/my-cicd-app:latest`. The container listens on Render's `PORT`
-   automatically.
-3. In this repository, add three secrets under **Settings > Secrets and variables > Actions**:
-   - `RENDER_API_KEY`: from Render account settings
-   - `RENDER_SERVICE_ID`: the `srv-...` ID in the service URL
-   - `RENDER_APP_URL`: the public URL, e.g. `https://my-cicd-app.onrender.com`
+1. On [Vercel](https://vercel.com), import this GitHub repository as a project.
+   `vercel.json` turns off Vercel's own automatic Git deployments, so only the pipeline
+   deploys and nothing unchecked goes live.
+2. Note the project's **Project ID** and your **Team/Org ID** (Project Settings > General), and
+   create a token (Account Settings > Tokens).
+3. Optional but recommended: under **Deployment Protection**, create a
+   **Protection Bypass for Automation** secret, so the health check can reach the new
+   deployment before it is public.
+4. In this repository, add these secrets under **Settings > Secrets and variables > Actions**:
+   - `VERCEL_TOKEN`
+   - `VERCEL_ORG_ID`
+   - `VERCEL_PROJECT_ID`
+   - `VERCEL_APP_URL`: the production URL, e.g. `https://my-cicd-framework.vercel.app`
+   - `VERCEL_AUTOMATION_BYPASS_SECRET` (from step 3)
 
-Until these secrets exist, the deploy stage is skipped with a notice and everything else runs.
+Until the required secrets exist, the deploy stage is skipped with a notice and everything else
+runs.
 
-### Required for AI review
+### Deployment to Render (alternative)
 
-Add a `GEMINI_API_KEY` secret (free key from Google AI Studio). Without it, the review is
-skipped.
+Set `deploy.provider: "render"`, make the GHCR package public, create a Render web service from
+`ghcr.io/vigneshn2005/my-cicd-app:latest`, and add `RENDER_API_KEY`, `RENDER_SERVICE_ID` and
+`RENDER_APP_URL` secrets.
+
+### AI review
+
+Add a `GROQ_API_KEY` secret (free key from console.groq.com). To use Gemini instead, set
+`ai_review.provider: "gemini"` and add `GEMINI_API_KEY`. Without a key, the review is skipped.
 
 ## Run locally
 
@@ -126,9 +146,12 @@ python scripts/read_config.py
   ai-review.yml       LLM review on pull requests
 scripts/
   read_config.py      parses and validates pipeline-config.yml
-  deploy_render.py    deploy, health check, rollback
-  ai_review.py        builds the review prompt and calls Gemini
+  deploy_vercel.py    Vercel blue-green deploy, health checks, rollback
+  deploy_render.py    Render deploy, health check, rollback
+  ai_review.py        builds the review prompt and calls Groq or Gemini
   tests/              unit tests for all three scripts
+api/index.py          Vercel entry point for the FastAPI backend
+vercel.json           Vercel build and routing settings
 backend/              FastAPI app, pytest tests
 frontend/             React (Vite) app, Vitest tests, ESLint config
 Dockerfile            multi-stage build (Node build stage, Python + Nginx runtime)
@@ -140,4 +163,5 @@ ruff.toml             Python lint rules
 
 - **v1**: React + FastAPI + Docker + GitHub Actions, config toggles for build and test
 - **v2**: config validation, lint, coverage gates, DevSecOps scanning, GHCR publishing,
-  cloud deployment with health-checked rollback, AI pull request review
+  blue-green Vercel deployment (or Render) with health-checked rollback, AI pull request review
+  (Groq or Gemini)

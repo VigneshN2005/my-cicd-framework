@@ -1,11 +1,12 @@
 # ─────────────────────────────────────────────────
 # ai-review.yml: LLM code review on every pull request
 #
-# Sends the pull request's diff to Google Gemini with a review prompt
+# Sends the pull request's diff to an LLM (Groq or Gemini) with a review prompt
 # focused on bugs, security risks and missing tests, then posts the
 # answer as a PR comment (updating it on each new push).
-# Advisory only: it never blocks a merge. If the GEMINI_API_KEY secret
-# is not set, or ai_review is false in pipeline-config.yml, it is skipped.
+# Advisory only: it never blocks a merge. If the provider's API key
+# (GROQ_API_KEY or GEMINI_API_KEY) is not set, or ai_review is false in
+# pipeline-config.yml, it is skipped.
 # ─────────────────────────────────────────────────
 
 name: AI Code Review
@@ -48,6 +49,8 @@ jobs:
       - name: Ask the model for a review
         if: steps.cfg.outputs.ai_review == 'true'
         env:
+          AI_PROVIDER: ${{ steps.cfg.outputs.ai_provider }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AI_MODEL: ${{ steps.cfg.outputs.ai_model }}
           MAX_DIFF_CHARS: ${{ steps.cfg.outputs.ai_max_diff_chars }}

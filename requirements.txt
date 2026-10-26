@@ -1,0 +1,4 @@
+# Python packages for the Vercel serverless backend (api/index.py).
+# The Docker image uses backend/requirements.txt instead.
+fastapi>=0.115.0
+pydantic>=2.9.0

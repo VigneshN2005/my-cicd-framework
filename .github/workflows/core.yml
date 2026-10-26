@@ -2,7 +2,8 @@
 # core.yml: the CI/CD pipeline
 #
 #   config ─┬─ lint ── test ─┬─ docker ── deploy ── summary
-#           └─ security ─────┘   (build, smoke test, Trivy, publish)
+#           └─ security ─────┘   (build, smoke test,   (Vercel blue-green
+#                                 Trivy, publish)      or Render)
 #
 # Every stage reads its on/off switch and settings from
 # pipeline-config.yml (parsed and validated by scripts/read_config.py).
@@ -54,6 +55,7 @@ jobs:
       image_scan: ${{ steps.cfg.outputs.image_scan }}
       trivy_severity: ${{ steps.cfg.outputs.trivy_severity }}
       image_name: ${{ steps.cfg.outputs.image_name }}
+      deploy_provider: ${{ steps.cfg.outputs.deploy_provider }}
       health_path: ${{ steps.cfg.outputs.health_path }}
       health_timeout_seconds: ${{ steps.cfg.outputs.health_timeout_seconds }}
       rollback_on_failure: ${{ steps.cfg.outputs.rollback_on_failure }}
@@ -266,9 +268,10 @@ jobs:
 
   # ════════════════════════════════════════════════
   # 6. DEPLOY: release to the cloud, verify, roll back on failure
+  #    Provider is chosen by deploy.provider in pipeline-config.yml.
   # ════════════════════════════════════════════════
   deploy:
-    name: Deploy + health check
+    name: Deploy + health check (${{ needs.config.outputs.deploy_provider }})
     needs: [config, docker]
     if: >-
       always() && needs.docker.result == 'success' &&
@@ -278,19 +281,36 @@ jobs:
     environment: production
     permissions:
       contents: read
-      packages: write   # needed to move the :stable tag
+      packages: write   # Render path: moves the :stable image tag
+    env:
+      PROVIDER: ${{ needs.config.outputs.deploy_provider }}
+      EXPECTED_VERSION: ${{ github.sha }}
+      HEALTH_PATH: ${{ needs.config.outputs.health_path }}
+      HEALTH_TIMEOUT: ${{ needs.config.outputs.health_timeout_seconds }}
+      ROLLBACK: ${{ needs.config.outputs.rollback_on_failure }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Check deployment secrets
         id: secrets
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
         run: |
-          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ] || [ -z "$RENDER_APP_URL" ]; then
-            echo "::notice title=Deploy skipped::Add RENDER_API_KEY, RENDER_SERVICE_ID and RENDER_APP_URL repository secrets to enable cloud deployment."
+          if [ "$PROVIDER" = "vercel" ]; then
+            needed="VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID VERCEL_APP_URL"
+          else
+            needed="RENDER_API_KEY RENDER_SERVICE_ID RENDER_APP_URL"
+          fi
+          missing=""
+          for name in $needed; do [ -z "${!name}" ] && missing="$missing $name"; done
+          if [ -n "$missing" ]; then
+            echo "::notice title=Deploy skipped::Add these repository secrets to enable deployment to $PROVIDER:$missing"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -301,36 +321,53 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Deploy to Render (rollback on failure = ${{ needs.config.outputs.rollback_on_failure }})
-        id: deploy
-        if: steps.secrets.outputs.ready == 'true'
+      # ── Vercel: blue-green release ──────────────────
+      - uses: actions/setup-node@v5
+        if: steps.secrets.outputs.ready == 'true' && env.PROVIDER == 'vercel'
+        with:
+          node-version: ${{ needs.config.outputs.node_version }}
+
+      - name: Deploy to Vercel (build, health-check, then switch the domain)
+        id: vercel
+        if: steps.secrets.outputs.ready == 'true' && env.PROVIDER == 'vercel'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          APP_URL: ${{ secrets.VERCEL_APP_URL }}
+        run: |
+          npm install --global vercel@latest
+          # Bake the commit SHA into the backend so /api/health can report it
+          echo "VERSION = \"${GITHUB_SHA}\"" > api/_version.py
+          python scripts/deploy_vercel.py
+
+      # ── Render: run the published Docker image ──────
+      - name: Deploy to Render
+        id: render
+        if: steps.secrets.outputs.ready == 'true' && env.PROVIDER == 'render'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
           APP_URL: ${{ secrets.RENDER_APP_URL }}
           NEW_IMAGE: ${{ needs.docker.outputs.image }}:${{ github.sha }}
           STABLE_IMAGE: ${{ needs.docker.outputs.image }}:stable
-          EXPECTED_VERSION: ${{ github.sha }}
-          HEALTH_PATH: ${{ needs.config.outputs.health_path }}
-          HEALTH_TIMEOUT: ${{ needs.config.outputs.health_timeout_seconds }}
-          ROLLBACK: ${{ needs.config.outputs.rollback_on_failure }}
         run: python scripts/deploy_render.py
 
       - name: Log in to GitHub Container Registry
-        if: steps.deploy.outputs.result == 'deployed'
+        if: steps.render.outputs.result == 'deployed'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Promote this version to :stable
-        if: steps.deploy.outputs.result == 'deployed'
+      - name: Promote this image to :stable (Render rollback target)
+        if: steps.render.outputs.result == 'deployed'
         run: |
           docker buildx imagetools create \
             -t ${{ needs.docker.outputs.image }}:stable \
             ${{ needs.docker.outputs.image }}:${{ github.sha }}
-          echo "${{ github.sha }} is now the stable version (rollback target)."
 
   # ════════════════════════════════════════════════
   # 7. SUMMARY: one table of every stage's result
