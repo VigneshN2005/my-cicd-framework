@@ -9,7 +9,7 @@ Flow:
      the new commit SHA.
      - Unhealthy: stop here. The domain was never switched, so production
        keeps serving the last healthy version. The pipeline fails.
-  4. Healthy: point the production domain at it (`vercel promote`).
+  4. Healthy: point the production domain at it (Vercel's promote API).
   5. Health-check the production domain itself.
      - Unhealthy and rollback enabled: promote the previous deployment
        back onto the domain, then fail the pipeline.
@@ -58,15 +58,23 @@ def default_runner(args: list[str]) -> str:
     return result.stdout
 
 
-def default_http(url: str, headers: dict[str, str]) -> tuple[int, dict]:
-    req = urllib.request.Request(url, method="GET")
+def default_http(url: str, headers: dict[str, str], method: str = "GET") -> tuple[int, dict]:
+    data = b"{}" if method == "POST" else None
+    req = urllib.request.Request(url, data=data, method=method)
     for key, value in headers.items():
         req.add_header(key, value)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}")
+            text = resp.read().decode()
+            return resp.status, json.loads(text) if text.strip().startswith("{") else {}
     except urllib.error.HTTPError as exc:
-        return exc.code, {}
+        text = exc.read().decode(errors="replace")
+        try:
+            return exc.code, json.loads(text)
+        except json.JSONDecodeError:
+            return exc.code, {"error": text[:300]}
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         return 0, {"error": str(exc)}
 
@@ -80,7 +88,7 @@ class VercelDeployer:
     timeout: int
     bypass_secret: str = ""
     run: Callable[[list[str]], str] = default_runner
-    http: Callable[[str, dict[str, str]], tuple[int, dict]] = default_http
+    http: Callable[..., tuple[int, dict]] = default_http
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
     poll_seconds: float = 10.0
@@ -93,15 +101,24 @@ class VercelDeployer:
     def cli(self, *args: str) -> str:
         return self.run(["vercel", *args, "--token", self.token])
 
+    def api(self, path: str, method: str = "GET") -> tuple[int, dict]:
+        """Call the Vercel REST API, scoped to the team when there is one."""
+        url = f"{API}{path}"
+        if self.org_id.startswith("team_"):
+            url += ("&" if "?" in url else "?") + f"teamId={self.org_id}"
+        return self.http(url, {"Authorization": f"Bearer {self.token}"}, method)
+
+    def deployment(self, url_or_host: str) -> dict | None:
+        """Look up a deployment (id, projectId, url) by its URL or a domain pointing at it."""
+        host = urllib.parse.urlparse(url_or_host).netloc or url_or_host
+        status, body = self.api(f"/v13/deployments/{host}")
+        return body if status == 200 and body.get("id") else None
+
     def current_production(self) -> str | None:
         """URL of the deployment the production domain points to right now."""
-        host = urllib.parse.urlparse(self.app_url).netloc or self.app_url
-        url = f"{API}/v13/deployments/{host}"
-        if self.org_id.startswith("team_"):
-            url += f"?teamId={self.org_id}"
-        status, body = self.http(url, {"Authorization": f"Bearer {self.token}"})
-        if status == 200 and body.get("url"):
-            return "https://" + body["url"]
+        info = self.deployment(self.app_url)
+        if info and info.get("url"):
+            return "https://" + info["url"]
         self.say("No current production deployment found (first deploy?); rollback target unavailable")
         return None
 
@@ -114,9 +131,13 @@ class VercelDeployer:
         return lines[-1]
 
     def promote(self, deployment_url: str) -> None:
-        # --scope makes the CLI look the deployment up in the right team;
-        # --yes avoids an interactive prompt in CI.
-        self.cli("promote", deployment_url, "--yes", "--scope", self.org_id)
+        """Point the production domain at this deployment (Vercel's promote API)."""
+        info = self.deployment(deployment_url)
+        if not info or not info.get("projectId"):
+            raise DeployError(f"could not look up deployment {deployment_url}")
+        status, body = self.api(f"/v10/projects/{info['projectId']}/promote/{info['id']}", method="POST")
+        if status not in (200, 201, 202, 204):
+            raise DeployError(f"promote of {deployment_url} was refused (HTTP {status}): {body}")
         self.say(f"Production domain now points to {deployment_url}")
 
     def health_check(self, base_url: str, expected_version: str | None, use_bypass: bool) -> None:

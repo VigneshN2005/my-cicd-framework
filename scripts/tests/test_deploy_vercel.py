@@ -26,16 +26,26 @@ class FakeVercel:
             if self.deploy_fails:
                 raise DeployError("build failed")
             return f"Vercel CLI\nInspect: https://vercel.com/x\n{NEW}\n"
-        if args[1] == "promote":
-            self.domain_target = args[2]
-            return ""
         raise AssertionError(args)
 
-    def http(self, url, headers):
-        if url.startswith("https://api.vercel.com/v13/deployments/"):
-            if not self.has_previous:
-                return 404, {}
-            return 200, {"url": OLD.removeprefix("https://")}
+    IDS = {OLD: "dpl_old", NEW: "dpl_new"}
+
+    def http(self, url, headers, method="GET"):
+        if url.startswith("https://api.vercel.com/"):
+            assert "teamId=team_abc" in url
+            path = url.split("?")[0].removeprefix("https://api.vercel.com")
+            if path.startswith("/v13/deployments/"):
+                host = "https://" + path.rsplit("/", 1)[1]
+                target = self.domain_target if host == PROD else host
+                if target is None or target not in self.IDS:
+                    return 404, {}
+                return 200, {"id": self.IDS[target], "projectId": "prj_1", "url": target.removeprefix("https://")}
+            if method == "POST" and path.startswith("/v10/projects/prj_1/promote/"):
+                dep_id = path.rsplit("/", 1)[1]
+                self.domain_target = next(u for u, i in self.IDS.items() if i == dep_id)
+                self.commands.append(["promote", self.domain_target])
+                return 201, {}
+            return 404, {}
         base = url.rsplit("/api/health", 1)[0]
         target = self.domain_target if base == PROD else base
         if base != PROD and self.protected and "x-vercel-protection-bypass" not in headers:
