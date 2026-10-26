@@ -1,255 +1,357 @@
 # ─────────────────────────────────────────────────
-# core.yml
-# THIS IS THE BRAIN OF YOUR CI/CD PIPELINE
+# core.yml: the CI/CD pipeline
 #
-# This file tells GitHub Actions what to do
-# every time you push code to the main branch
+#   config ─┬─ lint ── test ─┬─ docker ── deploy ── summary
+#           └─ security ─────┘   (build, smoke test, Trivy, publish)
 #
-# Flow:
-#   Push code → GitHub reads this file
-#   → Runs each job → Builds, Tests, Deploys
+# Every stage reads its on/off switch and settings from
+# pipeline-config.yml (parsed and validated by scripts/read_config.py).
+# Any failure stops everything after it: nothing is published or
+# deployed unless lint, tests, coverage and security scans all pass.
 # ─────────────────────────────────────────────────
 
-name: CI/CD Pipeline  # Name shown on GitHub Actions tab
+name: CI/CD Pipeline
 
-# ── TRIGGER ───────────────────────────────────────
-# When should this pipeline run?
 on:
   push:
-    branches:
-      - main          # Runs when you push to main branch
-
-  # Also allows you to run manually from GitHub UI
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
-# ── JOBS ──────────────────────────────────────────
-# Jobs are the main sections of your pipeline
-# Each job runs on a fresh Linux machine
+# Never run two pipelines for the same branch at once (avoids racing deploys)
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
 
   # ════════════════════════════════════════════════
-  # JOB 1: BUILD AND TEST
-  # Builds frontend + backend, runs tests
+  # 1. CONFIG: read and validate pipeline-config.yml
   # ════════════════════════════════════════════════
-  build-and-test:
-    name: Build and Test        # Name shown on GitHub
-    runs-on: ubuntu-latest      # Fresh Linux machine
-
-    steps:
-
-      # ── STEP 1: CHECKOUT ────────────────────────
-      # Downloads your code onto the Linux machine
-      # Without this, the machine has no code!
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      # ── STEP 2: READ CONFIG ─────────────────────
-      # Reads your pipeline-config.yml
-      # Sets variables that other steps can use
-      - name: Read Pipeline Config
-        id: config
-        run: |
-          echo "Reading pipeline-config.yml..."
-
-          # Read each feature flag from config
-          FRONTEND=$(python3 -c "
-          import re
-          content = open('pipeline-config.yml').read()
-          match = re.search(r'frontend:\s*(true|false)', content)
-          print(match.group(1) if match else 'true')
-          ")
-
-          BACKEND=$(python3 -c "
-          import re
-          content = open('pipeline-config.yml').read()
-          match = re.search(r'backend:\s*(true|false)', content)
-          print(match.group(1) if match else 'true')
-          ")
-
-          TEST=$(python3 -c "
-          import re
-          content = open('pipeline-config.yml').read()
-          match = re.search(r'test:\s*(true|false)', content)
-          print(match.group(1) if match else 'true')
-          ")
-
-          # Save to GitHub environment variables
-          echo "frontend=$FRONTEND" >> $GITHUB_OUTPUT
-          echo "backend=$BACKEND" >> $GITHUB_OUTPUT
-          echo "test=$TEST" >> $GITHUB_OUTPUT
-
-          echo "✅ Config loaded!"
-          echo "   Frontend: $FRONTEND"
-          echo "   Backend:  $BACKEND"
-          echo "   Test:     $TEST"
-
-      # ── STEP 3: SETUP NODE.JS ───────────────────
-      # Installs Node.js on the Linux machine
-      # Needed to build React frontend
-      - name: Setup Node.js
-        if: steps.config.outputs.frontend == 'true'
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'      # same version as your local
-          cache: 'npm'
-          cache-dependency-path: frontend/package.json
-
-      # ── STEP 4: BUILD FRONTEND ──────────────────
-      # Installs React dependencies and builds app
-      # Same as running npm install + npm run build locally
-      - name: Build Frontend
-        if: steps.config.outputs.frontend == 'true'
-        run: |
-          echo "🌐 Building React Frontend..."
-          cd frontend
-          npm install
-          npm run build
-          echo "✅ Frontend build complete!"
-          echo "   Built files in frontend/dist/"
-
-      # ── STEP 5: SETUP PYTHON ────────────────────
-      # Installs Python on the Linux machine
-      # Needed to run FastAPI backend
-      - name: Setup Python
-        if: steps.config.outputs.backend == 'true'
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'  # same version as your local
-
-      # ── STEP 6: BUILD BACKEND ───────────────────
-      # Installs all Python libraries
-      # Same as running pip install -r requirements.txt locally
-      - name: Build Backend
-        if: steps.config.outputs.backend == 'true'
-        run: |
-          echo "⚙️ Building Python Backend..."
-          cd backend
-          pip install -r requirements.txt
-          echo "✅ Backend build complete!"
-
-      # ── STEP 7: RUN BACKEND TESTS ───────────────
-      # Runs pytest on your backend
-      # If any test fails → pipeline STOPS here
-      # App will NOT be deployed if tests fail!
-      - name: Run Backend Tests
-        if: |
-          steps.config.outputs.backend == 'true' &&
-          steps.config.outputs.test == 'true'
-        run: |
-          echo "🧪 Running Backend Tests..."
-          cd backend
-          pytest tests/ -v
-          echo "✅ All backend tests passed!"
-
-      # ── STEP 8: RUN FRONTEND TESTS ──────────────
-      # Runs vitest on your frontend
-      - name: Run Frontend Tests
-        if: |
-          steps.config.outputs.frontend == 'true' &&
-          steps.config.outputs.test == 'true'
-        run: |
-          echo "🧪 Running Frontend Tests..."
-          cd frontend
-          npm run test
-          echo "✅ All frontend tests passed!"
-
-      # ── STEP 9: QUALITY GATE ────────────────────
-      # This step only runs if ALL above steps passed
-      # It's a checkpoint before Docker build
-      - name: Quality Gate Check
-        run: |
-          echo "🔍 Quality Gate Check..."
-          echo "✅ All builds successful!"
-          echo "✅ All tests passed!"
-          echo "✅ Code is ready for packaging!"
-
-
-  # ════════════════════════════════════════════════
-  # JOB 2: DOCKER BUILD
-  # Packages your app into a Docker container
-  # Only runs if Job 1 (build-and-test) passed!
-  # ════════════════════════════════════════════════
-  docker-build:
-    name: Docker Build
+  config:
+    name: Read config
     runs-on: ubuntu-latest
-
-    # ⚠️ IMPORTANT: Only runs if build-and-test passed!
-    # This is the quality gate in action
-    needs: build-and-test
-
+    outputs:
+      frontend: ${{ steps.cfg.outputs.frontend }}
+      backend: ${{ steps.cfg.outputs.backend }}
+      lint: ${{ steps.cfg.outputs.lint }}
+      test: ${{ steps.cfg.outputs.test }}
+      security: ${{ steps.cfg.outputs.security }}
+      docker: ${{ steps.cfg.outputs.docker }}
+      publish: ${{ steps.cfg.outputs.publish }}
+      deploy: ${{ steps.cfg.outputs.deploy }}
+      node_version: ${{ steps.cfg.outputs.node_version }}
+      python_version: ${{ steps.cfg.outputs.python_version }}
+      backend_coverage_min: ${{ steps.cfg.outputs.backend_coverage_min }}
+      frontend_coverage_min: ${{ steps.cfg.outputs.frontend_coverage_min }}
+      fail_on: ${{ steps.cfg.outputs.fail_on }}
+      dependency_audit: ${{ steps.cfg.outputs.dependency_audit }}
+      secret_scan: ${{ steps.cfg.outputs.secret_scan }}
+      image_scan: ${{ steps.cfg.outputs.image_scan }}
+      trivy_severity: ${{ steps.cfg.outputs.trivy_severity }}
+      image_name: ${{ steps.cfg.outputs.image_name }}
+      health_path: ${{ steps.cfg.outputs.health_path }}
+      health_timeout_seconds: ${{ steps.cfg.outputs.health_timeout_seconds }}
+      rollback_on_failure: ${{ steps.cfg.outputs.rollback_on_failure }}
     steps:
-
-      # Checkout code again (fresh machine)
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      # ── STEP 1: BUILD DOCKER IMAGE ──────────────
-      # Creates Docker image of your entire app
-      # Same as running docker build locally
-      - name: Build Docker Image
-        run: |
-          echo "🐳 Building Docker Image..."
-          docker build -t my-cicd-app:latest .
-          echo "✅ Docker image built successfully!"
-
-      # ── STEP 2: VERIFY IMAGE ────────────────────
-      # Checks that the image was created correctly
-      - name: Verify Docker Image
-        run: |
-          echo "🔍 Verifying Docker Image..."
-          docker images my-cicd-app
-          echo "✅ Docker image verified!"
-
-      # ── STEP 3: TEST DOCKER CONTAINER ───────────
-      # Starts the container and checks it runs
-      - name: Test Docker Container
-        run: |
-          echo "🧪 Testing Docker Container..."
-
-          # Start container in background
-          docker run -d \
-            -p 80:80 \
-            -p 8000:8000 \
-            --name test-container \
-            my-cicd-app:latest
-
-          # Wait for container to start
-          sleep 5
-
-          # Check if container is running
-          docker ps | grep test-container
-
-          # Test backend health check
-          curl -f http://localhost:8000 || exit 1
-
-          echo "✅ Container is running correctly!"
-
-          # Stop test container
-          docker stop test-container
-          docker rm test-container
-
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+      - name: Validate pipeline-config.yml
+        id: cfg
+        run: python scripts/read_config.py pipeline-config.yml
 
   # ════════════════════════════════════════════════
-  # JOB 3: SUMMARY
-  # Shows a summary of what happened
+  # 2. LINT: ruff (Python) and ESLint (React)
   # ════════════════════════════════════════════════
-  pipeline-summary:
-    name: Pipeline Summary
+  lint:
+    name: Lint
+    needs: config
+    if: needs.config.outputs.lint == 'true'
     runs-on: ubuntu-latest
-    needs: docker-build   # runs after docker job
-
     steps:
-      - name: Pipeline Complete
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        if: needs.config.outputs.backend == 'true'
+        with:
+          python-version: ${{ needs.config.outputs.python_version }}
+      - name: ruff (backend + pipeline scripts)
+        if: needs.config.outputs.backend == 'true'
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  CI/CD PIPELINE COMPLETE 🚀    "
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "✅ Code checked out"
-          echo "✅ Frontend built (React)"
-          echo "✅ Backend built (FastAPI)"
-          echo "✅ Tests passed (pytest)"
-          echo "✅ Docker image built"
-          echo "✅ Container tested"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Your app is ready to deploy!  "
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          pip install ruff
+          ruff check . --output-format=github
+
+      - uses: actions/setup-node@v5
+        if: needs.config.outputs.frontend == 'true'
+        with:
+          node-version: ${{ needs.config.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: ESLint (frontend)
+        if: needs.config.outputs.frontend == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+
+  # ════════════════════════════════════════════════
+  # 3. TEST: unit tests with coverage gates
+  # ════════════════════════════════════════════════
+  test:
+    name: Test + coverage gate
+    needs: [config, lint]
+    if: >-
+      always() && needs.config.result == 'success' &&
+      needs.config.outputs.test == 'true' &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ needs.config.outputs.python_version }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install backend test dependencies
+        run: pip install -r backend/requirements-dev.txt pyyaml
+
+      - name: Backend tests (pytest, coverage >= ${{ needs.config.outputs.backend_coverage_min }}%)
+        if: needs.config.outputs.backend == 'true'
+        working-directory: backend
+        run: |
+          pytest tests -v \
+            --cov=app --cov-report=term-missing \
+            --cov-fail-under=${{ needs.config.outputs.backend_coverage_min }}
+
+      - name: Pipeline script tests (config parser, deploy + rollback, AI review)
+        run: pytest scripts/tests -v
+
+      - uses: actions/setup-node@v5
+        if: needs.config.outputs.frontend == 'true'
+        with:
+          node-version: ${{ needs.config.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend tests (Vitest, coverage >= ${{ needs.config.outputs.frontend_coverage_min }}%)
+        if: needs.config.outputs.frontend == 'true'
+        working-directory: frontend
+        env:
+          FRONTEND_COVERAGE_MIN: ${{ needs.config.outputs.frontend_coverage_min }}
+        run: |
+          npm ci
+          npm run test:coverage
+
+  # ════════════════════════════════════════════════
+  # 4. SECURITY: dependency audits + secret scanning
+  #    (runs in parallel with lint and test)
+  # ════════════════════════════════════════════════
+  security:
+    name: Security scan
+    needs: config
+    if: needs.config.outputs.security == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # Gitleaks scans the whole history, not just the latest commit
+
+      - name: Secret scan (Gitleaks)
+        if: needs.config.outputs.secret_scan == 'true'
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v6
+        if: needs.config.outputs.dependency_audit == 'true' && needs.config.outputs.backend == 'true'
+        with:
+          python-version: ${{ needs.config.outputs.python_version }}
+      - name: Python dependency audit (pip-audit)
+        if: needs.config.outputs.dependency_audit == 'true' && needs.config.outputs.backend == 'true'
+        run: |
+          pip install pip-audit
+          pip-audit -r backend/requirements.txt --progress-spinner off
+
+      - uses: actions/setup-node@v5
+        if: needs.config.outputs.dependency_audit == 'true' && needs.config.outputs.frontend == 'true'
+        with:
+          node-version: ${{ needs.config.outputs.node_version }}
+      - name: npm dependency audit (fails on ${{ needs.config.outputs.fail_on }} or worse)
+        if: needs.config.outputs.dependency_audit == 'true' && needs.config.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm audit --audit-level=${{ needs.config.outputs.fail_on }}
+
+  # ════════════════════════════════════════════════
+  # 5. DOCKER: build, smoke test, image scan, publish
+  # ════════════════════════════════════════════════
+  docker:
+    name: Docker build, scan + publish
+    needs: [config, test, security]
+    if: >-
+      always() && needs.config.result == 'success' &&
+      needs.config.outputs.docker == 'true' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.security.result == 'success' || needs.security.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # needed to push to GitHub Container Registry
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      published: ${{ steps.publish.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Work out image name and tags
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner}/${{ needs.config.outputs.image_name }}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: |
+          docker build \
+            --build-arg APP_VERSION=${{ github.sha }} \
+            -t ${{ steps.meta.outputs.image }}:${{ github.sha }} .
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name smoke -p 8080:80 ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:8080/api/health > health.json; then break; fi
+            sleep 2
+          done
+          cat health.json
+          grep -q '"version":"${{ github.sha }}"' health.json || { echo "::error::Container did not report the expected version"; docker logs smoke; exit 1; }
+          curl -fs http://localhost:8080/ | grep -qi '<div id="root">' || { echo "::error::Frontend page not served"; exit 1; }
+          echo "Backend and frontend both respond inside the container."
+          docker rm -f smoke
+
+      - name: Image scan (Trivy, fails on ${{ needs.config.outputs.trivy_severity }})
+        if: needs.config.outputs.security == 'true' && needs.config.outputs.image_scan == 'true'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          severity: ${{ needs.config.outputs.trivy_severity }}
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Log in to GitHub Container Registry
+        if: needs.config.outputs.publish == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish image (:${{ steps.meta.outputs.short_sha }}, :${{ github.sha }}, :latest)
+        id: publish
+        if: needs.config.outputs.publish == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          img=${{ steps.meta.outputs.image }}
+          docker tag $img:${{ github.sha }} $img:${{ steps.meta.outputs.short_sha }}
+          docker tag $img:${{ github.sha }} $img:latest
+          docker push $img:${{ github.sha }}
+          docker push $img:${{ steps.meta.outputs.short_sha }}
+          docker push $img:latest
+
+  # ════════════════════════════════════════════════
+  # 6. DEPLOY: release to the cloud, verify, roll back on failure
+  # ════════════════════════════════════════════════
+  deploy:
+    name: Deploy + health check
+    needs: [config, docker]
+    if: >-
+      always() && needs.docker.result == 'success' &&
+      needs.docker.outputs.published == 'true' &&
+      needs.config.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write   # needed to move the :stable tag
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check deployment secrets
+        id: secrets
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
+        run: |
+          if [ -z "$RENDER_API_KEY" ] || [ -z "$RENDER_SERVICE_ID" ] || [ -z "$RENDER_APP_URL" ]; then
+            echo "::notice title=Deploy skipped::Add RENDER_API_KEY, RENDER_SERVICE_ID and RENDER_APP_URL repository secrets to enable cloud deployment."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Deploy to Render (rollback on failure = ${{ needs.config.outputs.rollback_on_failure }})
+        id: deploy
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          APP_URL: ${{ secrets.RENDER_APP_URL }}
+          NEW_IMAGE: ${{ needs.docker.outputs.image }}:${{ github.sha }}
+          STABLE_IMAGE: ${{ needs.docker.outputs.image }}:stable
+          EXPECTED_VERSION: ${{ github.sha }}
+          HEALTH_PATH: ${{ needs.config.outputs.health_path }}
+          HEALTH_TIMEOUT: ${{ needs.config.outputs.health_timeout_seconds }}
+          ROLLBACK: ${{ needs.config.outputs.rollback_on_failure }}
+        run: python scripts/deploy_render.py
+
+      - name: Log in to GitHub Container Registry
+        if: steps.deploy.outputs.result == 'deployed'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote this version to :stable
+        if: steps.deploy.outputs.result == 'deployed'
+        run: |
+          docker buildx imagetools create \
+            -t ${{ needs.docker.outputs.image }}:stable \
+            ${{ needs.docker.outputs.image }}:${{ github.sha }}
+          echo "${{ github.sha }} is now the stable version (rollback target)."
+
+  # ════════════════════════════════════════════════
+  # 7. SUMMARY: one table of every stage's result
+  # ════════════════════════════════════════════════
+  summary:
+    name: Pipeline summary
+    needs: [config, lint, test, security, docker, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        run: |
+          {
+            echo "## CI/CD pipeline result"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| --- | --- |"
+            echo "| Config | ${{ needs.config.result }} |"
+            echo "| Lint | ${{ needs.lint.result }} |"
+            echo "| Test + coverage | ${{ needs.test.result }} |"
+            echo "| Security scan | ${{ needs.security.result }} |"
+            echo "| Docker build, scan + publish | ${{ needs.docker.result }} |"
+            echo "| Deploy + health check | ${{ needs.deploy.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

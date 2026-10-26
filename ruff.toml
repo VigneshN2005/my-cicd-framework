@@ -1,0 +1,15 @@
+# Linting rules for all Python code (backend + pipeline scripts)
+target-version = "py311"
+line-length = 120
+src = ["backend", "scripts"]
+
+[lint]
+# E/W: style errors, F: real bugs (unused names, undefined names),
+# B: likely bugs, S: security issues (bandit rules), I: import order
+select = ["E", "W", "F", "B", "S", "I"]
+
+[lint.per-file-ignores]
+# assert is how pytest works; it is not a security problem in tests
+"**/tests/**" = ["S101"]
+# The deploy and review scripts call fixed HTTPS APIs on purpose
+"scripts/*.py" = ["S310"]

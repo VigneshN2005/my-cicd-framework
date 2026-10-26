@@ -1,100 +1,71 @@
 # ─────────────────────────────────────────────────
 # pipeline-config.yml
-# THIS IS YOUR CI/CD CONTROL PANEL
+# THE CONTROL PANEL FOR THE WHOLE PIPELINE
 #
-# Change these values to control what the
-# pipeline does for each of your projects
+# Every stage in .github/workflows/core.yml reads its
+# settings from this file (via scripts/read_config.py).
+#   true  = the stage runs
+#   false = the stage is skipped
 #
-# How it works:
-#   true  = pipeline RUNS this stage
-#   false = pipeline SKIPS this stage
+# The config is validated on every run: a typo or a
+# wrong value fails the pipeline immediately with a
+# clear error, instead of silently doing the wrong thing.
 # ─────────────────────────────────────────────────
 
-
-# ── Project Info ──────────────────────────────────
 project:
-  name: "my-cicd-framework"       # your project name
-  version: "1.0.0"                # project version
-  description: "CI/CD Learning Framework"
-
-  # What type of project is this?
-  # Options:
-  #   fullstack → has both frontend and backend
-  #   frontend  → only React app
-  #   backend   → only Python/FastAPI
+  name: "my-cicd-framework"
+  version: "2.0.0"
+  # fullstack | frontend | backend
   type: "fullstack"
 
+# ── Stages ────────────────────────────────────────
+stages:
+  lint: true        # ruff (Python) + ESLint (React)
+  test: true        # pytest + Vitest, with coverage gates
+  security: true    # dependency audit, secret scan, image scan
+  docker: true      # build the image and smoke-test the container
+  publish: true     # push the image to GitHub Container Registry
+  deploy: true      # deploy to the cloud, health-check, roll back on failure
+  ai_review: true   # LLM review comment on every pull request
 
-# ── Feature Flags ─────────────────────────────────
-# Turn each pipeline stage ON or OFF
-features:
-
-  # Build React frontend?
-  # Set false if your project has no frontend
-  frontend: true
-
-  # Build Python/FastAPI backend?
-  # Set false if your project has no backend
-  backend: true
-
-  # Run automated tests?
-  # pytest for backend, vitest for frontend
-  test: true
-
-  # Build Docker image?
-  # Set false if you just want to test, not package
-  docker: true
-
-  # Deploy the Docker container?
-  # Set false if you only want to build, not deploy
-  deploy: true
-
-
-# ── Environment Settings ──────────────────────────
+# ── Tool versions ─────────────────────────────────
 environment:
-
-  # Node.js version for frontend build
-  node_version: "18"
-
-  # Python version for backend build
+  node_version: "22"
   python_version: "3.11"
 
-  # Ports
-  frontend_port: 3001       # React runs here locally
-  backend_port: 8000        # FastAPI runs here
-
-
-# ── Docker Settings ───────────────────────────────
-docker:
-
-  # Name of your Docker image
-  image_name: "my-cicd-app"
-
-  # Docker image version tag
-  image_tag: "latest"
-
-  # Port mappings (host:container)
-  ports:
-    frontend: "80:80"
-    backend: "8000:8000"
-
-
-# ── Test Settings ─────────────────────────────────
+# ── Testing ───────────────────────────────────────
 testing:
+  # The pipeline fails if line coverage drops below these numbers.
+  backend_coverage_min: 80
+  frontend_coverage_min: 70
 
-  # Run backend tests (pytest)?
-  backend_tests: true
+# ── Security (DevSecOps) ──────────────────────────
+security:
+  # Lowest severity that blocks a release: low | moderate | high | critical
+  fail_on: "critical"
+  dependency_audit: true   # pip-audit + npm audit
+  secret_scan: true        # Gitleaks over the full git history
+  image_scan: true         # Trivy scan of the built Docker image
 
-  # Run frontend tests (vitest)?
-  frontend_tests: true
+# ── Container image ───────────────────────────────
+docker:
+  image_name: "my-cicd-app"
+  # Images are tagged with the commit SHA (e.g. :3f2a9c1) and :latest.
+  # :stable always points to the last version that passed its health check.
 
-  # If tests fail, stop the pipeline?
-  # Always keep this true!
-  fail_on_error: true
+# ── Deployment ────────────────────────────────────
+deploy:
+  # Only "render" is supported right now.
+  provider: "render"
+  # Path the post-deploy health check calls. It must return the deployed
+  # commit SHA, so the check proves the NEW version is the one serving.
+  health_path: "/api/health"
+  health_timeout_seconds: 300
+  # Redeploy the :stable image if the new version fails its health check.
+  rollback_on_failure: true
 
-
-# ── Notification Settings (future use) ────────────
-# notifications:
-#   on_success: true
-#   on_failure: true
-#   email: "your@email.com"
+# ── AI code review ────────────────────────────────
+ai_review:
+  model: "gemini-2.5-flash"
+  # Large diffs are trimmed to this many characters before review.
+  max_diff_chars: 60000

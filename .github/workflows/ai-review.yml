@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────
+# ai-review.yml: LLM code review on every pull request
+#
+# Sends the pull request's diff to Google Gemini with a review prompt
+# focused on bugs, security risks and missing tests, then posts the
+# answer as a PR comment (updating it on each new push).
+# Advisory only: it never blocks a merge. If the GEMINI_API_KEY secret
+# is not set, or ai_review is false in pipeline-config.yml, it is skipped.
+# ─────────────────────────────────────────────────
+
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # to post the review comment
+
+jobs:
+  review:
+    name: AI review
+    runs-on: ubuntu-latest
+    # Secrets are not available to pull requests from forks
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+
+      - name: Read config
+        id: cfg
+        run: python scripts/read_config.py pipeline-config.yml
+
+      - name: Collect the pull request diff
+        if: steps.cfg.outputs.ai_review == 'true'
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" \
+            -- . ':(exclude)**/package-lock.json' > pr.diff
+          echo "Diff size: $(wc -c < pr.diff) bytes"
+
+      - name: Ask the model for a review
+        if: steps.cfg.outputs.ai_review == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_MODEL: ${{ steps.cfg.outputs.ai_model }}
+          MAX_DIFF_CHARS: ${{ steps.cfg.outputs.ai_max_diff_chars }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python scripts/ai_review.py pr.diff review.md
+
+      - name: Post or update the review comment
+        if: steps.cfg.outputs.ai_review == 'true' && hashFiles('review.md') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --edit-last --body-file review.md \
+            || gh pr comment ${{ github.event.pull_request.number }} --body-file review.md
