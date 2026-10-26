@@ -26,6 +26,17 @@ import urllib.error
 import urllib.request
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODELS = "https://api.groq.com/openai/v1/models"
+# Used only if the configured Groq model has been retired: the first of these
+# that the account can use is picked instead.
+GROQ_FALLBACKS = (
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-20b",
+    "llama-3.1-8b-instant",
+)
+NON_CHAT = ("whisper", "tts", "guard", "embed", "orpheus", "distil")
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 KEY_NAMES = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}
 MARKER = "<!-- ai-code-review -->"
@@ -96,10 +107,45 @@ def extract_text(provider: str, response: dict) -> str:
     return text
 
 
-def call_model(provider: str, prompt: str, model: str, api_key: str) -> str:
+def pick_fallback(available: list[str]) -> str | None:
+    """Choose a replacement chat model from the models the account can use."""
+    for name in GROQ_FALLBACKS:
+        if name in available:
+            return name
+    chat = [m for m in available if not any(word in m.lower() for word in NON_CHAT)]
+    return chat[0] if chat else None
+
+
+def list_groq_models(api_key: str) -> list[str]:
+    req = urllib.request.Request(GROQ_MODELS, method="GET")
+    req.add_header("Authorization", f"Bearer {api_key}")
+    req.add_header("User-Agent", "my-cicd-framework-ai-review/2.0")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return [m["id"] for m in json.loads(resp.read().decode()).get("data", []) if m.get("active", True)]
+
+
+def call_model(provider: str, prompt: str, model: str, api_key: str) -> tuple[str, str]:
+    """Return (review text, model actually used)."""
     req = build_request(provider, prompt, model, api_key)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return extract_text(provider, json.loads(resp.read().decode())), model
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        if provider != "groq" or exc.code != 404 or "model_not_found" not in body:
+            raise urllib.error.HTTPError(exc.url, exc.code, body[:300], exc.headers, None) from None
+    # The configured Groq model was retired: pick an available one and retry.
+    replacement = pick_fallback(list_groq_models(api_key))
+    if not replacement:
+        raise ValueError(f"model {model} is unavailable and no replacement chat model was found")
+    notice = (
+        f"'{model}' is no longer available on Groq, so '{replacement}' was used instead. "
+        "Change ai_review.model in pipeline-config.yml to silence this."
+    )
+    print(f"::warning title=Update ai_review.model::{notice}")
+    req = build_request(provider, prompt, replacement, api_key)
     with urllib.request.urlopen(req, timeout=120) as resp:
-        return extract_text(provider, json.loads(resp.read().decode()))
+        return extract_text(provider, json.loads(resp.read().decode())), replacement
 
 
 def format_comment(review: str, provider: str, model: str, trimmed: bool) -> str:
@@ -134,10 +180,9 @@ def main(argv: list[str]) -> int:
     max_chars = int(os.environ.get("MAX_DIFF_CHARS", "60000"))
     prompt, trimmed = build_prompt(diff, os.environ.get("PR_TITLE", ""), max_chars)
     try:
-        review = call_model(provider, prompt, model, api_key)
+        review, model = call_model(provider, prompt, model, api_key)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:300]
-        print(f"::warning title=AI review unavailable::HTTP {exc.code} from {provider}: {detail}")
+        print(f"::warning title=AI review unavailable::HTTP {exc.code} from {provider}: {exc.msg}")
         return 0
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         # Advisory stage: report the problem but never fail the pipeline over it.

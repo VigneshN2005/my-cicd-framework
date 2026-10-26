@@ -80,3 +80,13 @@ def test_skips_cleanly_without_api_key(tmp_path, monkeypatch, provider, key):
     out = tmp_path / "review.md"
     assert ai_review.main(["ai_review.py", str(diff), str(out)]) == 0
     assert not out.exists()
+
+
+def test_fallback_prefers_known_good_models():
+    available = ["whisper-large-v3", "qwen/qwen3-32b", "openai/gpt-oss-120b"]
+    assert ai_review.pick_fallback(available) == "openai/gpt-oss-120b"
+
+
+def test_fallback_skips_non_chat_models():
+    assert ai_review.pick_fallback(["whisper-large-v3", "llama-guard-4", "new-chat-model"]) == "new-chat-model"
+    assert ai_review.pick_fallback(["whisper-large-v3"]) is None
