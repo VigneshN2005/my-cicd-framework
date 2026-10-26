@@ -96,6 +96,8 @@ class VercelDeployer:
 
     def say(self, message: str) -> None:
         self.log.append(message)
+        if not message.startswith("::") and not message.startswith("Health check not passing"):
+            message = f"::notice::{message}"
         print(message, flush=True)
 
     def cli(self, *args: str) -> str:
@@ -221,4 +223,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # report unexpected crashes as a visible CI annotation
+        print(f"::error title=Deploy script crashed::{type(exc).__name__}: {exc}", flush=True)
+        raise
