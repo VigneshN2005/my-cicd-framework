@@ -237,7 +237,7 @@ jobs:
 
       - name: Image scan (Trivy, fails on ${{ needs.config.outputs.trivy_severity }})
         if: needs.config.outputs.security == 'true' && needs.config.outputs.image_scan == 'true'
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (pinned to a commit for supply-chain safety)
         with:
           image-ref: ${{ steps.meta.outputs.image }}:${{ github.sha }}
           severity: ${{ needs.config.outputs.trivy_severity }}
