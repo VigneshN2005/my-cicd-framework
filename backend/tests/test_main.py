@@ -3,9 +3,10 @@
 # CI/CD Note: GitHub Actions runs these automatically
 # If any test fails → pipeline STOPS → app is NOT deployed
 
-from fastapi.testclient import TestClient
-import sys
 import os
+import sys
+
+from fastapi.testclient import TestClient
 
 # This adds backend folder to Python path
 # So Python can find your app module
@@ -82,3 +83,32 @@ def test_process_data():
     assert "processed" in response.json()
 
     print("✅ Data processing endpoint passed")
+
+# ─────────────────────────────────────────
+# TEST 5: AI Predict Placeholder
+# ─────────────────────────────────────────
+def test_predict_placeholder():
+    response = client.post("/api/predict", json={"name": "model", "value": "input"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "placeholder"
+
+
+# ─────────────────────────────────────────
+# TEST 6: Deploy Health Check
+# The pipeline calls this after every deploy and compares "version"
+# with the commit it just deployed.
+# ─────────────────────────────────────────
+def test_deploy_health_reports_version(monkeypatch):
+    monkeypatch.setenv("APP_VERSION", "abc123")
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "version": "abc123"}
+
+
+# ─────────────────────────────────────────
+# TEST 7: Invalid Input Is Rejected
+# Pydantic validation must return 422 when a required field is missing.
+# ─────────────────────────────────────────
+def test_invalid_data_is_rejected():
+    response = client.post("/api/data", json={"name": "only-name"})
+    assert response.status_code == 422

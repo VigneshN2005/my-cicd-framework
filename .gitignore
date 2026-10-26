@@ -20,3 +20,9 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+# Test output
+.coverage
+coverage/
+frontend/coverage/
+.pytest_cache/
+.ruff_cache/

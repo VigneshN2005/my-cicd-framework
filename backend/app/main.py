@@ -3,15 +3,18 @@
 # It creates the app and connects all routes
 # CI/CD Note: Docker runs this file to start the backend server
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.routes import router
 
 # Create the FastAPI app
 app = FastAPI(
     title="My CI/CD Backend",
     description="FastAPI backend for CI/CD Learning Framework",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 # CORS Middleware
@@ -36,3 +39,10 @@ def health_check():
         "message": "Backend is running!",
         "framework": "FastAPI"
     }
+
+# Version endpoint used by the post-deploy health check.
+# APP_VERSION is baked into the Docker image at build time (the git commit SHA),
+# so the pipeline can confirm the NEW version is the one actually serving.
+@app.get("/api/health")
+def deploy_health():
+    return {"status": "ok", "version": os.environ.get("APP_VERSION", "dev")}

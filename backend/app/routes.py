@@ -31,13 +31,14 @@ def pipeline_info():
     return {
         "pipeline": "GitHub Actions",
         "stages": [
-            "Code Push",
-            "Checkout",
-            "Build Frontend",
-            "Build Backend",
-            "Run Tests",
-            "Docker Build",
-            "Docker Deploy"
+            "Read and validate pipeline-config.yml",
+            "Lint (ruff, ESLint)",
+            "Test with coverage gates (pytest, Vitest)",
+            "Security scan (pip-audit, npm audit, Gitleaks)",
+            "Build and smoke-test Docker image",
+            "Image scan (Trivy)",
+            "Publish to GitHub Container Registry",
+            "Deploy, health-check and roll back on failure",
         ],
         "status": "All stages passed"
     }

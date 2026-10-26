@@ -24,12 +24,5 @@ export default defineConfig({
   build: {
     outDir: 'dist',    // CI/CD pipeline looks for this folder
                        // Docker copies this folder to serve
-  },
-
-  test: {
-    environment: 'jsdom',
-    globals: true,
-    setupFiles: './src/setupTests.js',
-    include: ['src/**/*.{test,spec}.{js,jsx,ts,tsx}']
   }
 })

@@ -22,7 +22,7 @@ function App() {
         setBackendMessage(data.message)  // show backend message
         setStatus('Connected ✅')
       })
-      .catch(error => {
+      .catch(() => {
         setBackendMessage('Could not reach backend')
         setStatus('Not Connected ❌')
       })
@@ -41,13 +41,13 @@ function App() {
       <div className="card">
         <h2>Pipeline Stages</h2>
         <div className="stages">
-          <div className="stage">✅ Code Pushed to GitHub</div>
-          <div className="stage">✅ GitHub Actions Triggered</div>
-          <div className="stage">✅ Frontend Built (React)</div>
-          <div className="stage">✅ Backend Built (FastAPI)</div>
-          <div className="stage">✅ Tests Passed</div>
-          <div className="stage">✅ Docker Container Running</div>
-          <div className="stage">✅ App Deployed</div>
+          <div className="stage">✅ Config validated (pipeline-config.yml)</div>
+          <div className="stage">✅ Lint passed (ruff, ESLint)</div>
+          <div className="stage">✅ Tests passed with coverage gates</div>
+          <div className="stage">✅ Security scans passed (pip-audit, npm audit, Gitleaks, Trivy)</div>
+          <div className="stage">✅ Docker image built and smoke-tested</div>
+          <div className="stage">✅ Image published to GitHub Container Registry</div>
+          <div className="stage">✅ Deployed and health-checked (auto rollback on failure)</div>
         </div>
       </div>
 

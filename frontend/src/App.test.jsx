@@ -18,3 +18,11 @@ test('renders main app header and pipeline sections', async () => {
 
   await waitFor(() => expect(screen.getByText(/connected/i)).toBeInTheDocument())
 })
+
+test('shows a clear message when the backend is unreachable', async () => {
+  global.fetch = vi.fn(() => Promise.reject(new Error('network down')))
+  render(<App />)
+
+  await waitFor(() => expect(screen.getByText(/could not reach backend/i)).toBeInTheDocument())
+  expect(screen.getByText(/not connected/i)).toBeInTheDocument()
+})
