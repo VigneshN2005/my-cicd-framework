@@ -165,3 +165,5 @@ ruff.toml             Python lint rules
 - **v2**: config validation, lint, coverage gates, DevSecOps scanning, GHCR publishing,
   blue-green Vercel deployment (or Render) with health-checked rollback, AI pull request review
   (Groq or Gemini)
+
+<!-- AI review test -->
